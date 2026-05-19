@@ -685,19 +685,143 @@ class TestNormalizeCase:
 
 class TestNormalizeUnicode:
     def test_normalize_unicode(self):
+        import unicodedata
+
         import pandas as pd
 
         import arnio as ar
 
         df = pd.DataFrame({"text": ["cafe\u0301"]})
-
         frame = ar.from_pandas(df)
-
-        result = ar.normalize_unicode(frame)
-
+        result = ar.normalize_unicode(frame, form="NFC")
         result_df = ar.to_pandas(result)
+        assert result_df["text"].iloc[0] == unicodedata.normalize("NFC", "cafe\u0301")
 
+    def test_normalize_unicode_no_pandas_roundtrip(self):
+        import pandas as pd
+
+        import arnio as ar
+        import arnio.convert as convert_mod
+
+        df = pd.DataFrame({"text": ["café", "naïve"]})
+        frame = ar.from_pandas(df)
+        original = convert_mod.to_pandas
+
+        def _should_not_be_called(*a, **kw):
+            raise AssertionError("normalize_unicode called to_pandas!")
+
+        convert_mod.to_pandas = _should_not_be_called
+        try:
+            result = ar.normalize_unicode(frame)
+        finally:
+            convert_mod.to_pandas = original
+
+        result_df = original(result)
+        assert result_df["text"].tolist() == ["café", "naïve"]
+
+    def test_normalize_unicode_nfd_form(self):
+        import unicodedata
+
+        import pandas as pd
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["café"]})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame, form="NFD")
+        result_df = ar.to_pandas(result)
+        assert (
+            unicodedata.normalize("NFD", result_df["text"].iloc[0])
+            == result_df["text"].iloc[0]
+        )
+
+    def test_normalize_unicode_nfkc_form(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["ﬁle"]})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame, form="NFKC")
+        result_df = ar.to_pandas(result)
+        assert result_df["text"].iloc[0] == "file"
+
+    def test_normalize_unicode_preserves_nulls(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["café", None, "naïve"]})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame)
+        result_df = ar.to_pandas(result)
         assert result_df["text"].iloc[0] == "café"
+        assert pd.isna(result_df["text"].iloc[1])
+        assert result_df["text"].iloc[2] == "naïve"
+
+    def test_normalize_unicode_non_string_columns_unchanged(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["café"], "score": [42], "flag": [True]})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame)
+        result_df = ar.to_pandas(result)
+        assert result_df["score"].iloc[0] == 42
+        assert (
+            result_df["flag"].iloc[0] is True
+            or result_df["flag"].iloc[0] == True  # noqa: E712
+        )
+
+    def test_normalize_unicode_subset_only_targets_specified_columns(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        raw_a = "café"
+        raw_b = "résumé"
+        df = pd.DataFrame({"a": [raw_a], "b": [raw_b]})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame, subset=["a"])
+        result_df = ar.to_pandas(result)
+        assert result_df["a"].iloc[0] == "café"
+        assert result_df["b"].iloc[0] == raw_b
+
+    def test_normalize_unicode_invalid_form_raises(self):
+        import pandas as pd
+        import pytest
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["hello"]})
+        frame = ar.from_pandas(df)
+        with pytest.raises(ValueError, match="Unsupported Unicode normalization form"):
+            ar.normalize_unicode(frame, form="XYZ")
+
+    def test_normalize_unicode_large_frame_no_pandas(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        n = 10_000
+        df = pd.DataFrame({"text": ["café"] * n, "other": list(range(n))})
+        frame = ar.from_pandas(df)
+        result = ar.normalize_unicode(frame)
+        result_df = ar.to_pandas(result)
+        assert all(v == "café" for v in result_df["text"])
+
+    def test_normalize_unicode_attrs_deepcopy(self):
+        import pandas as pd
+
+        import arnio as ar
+
+        df = pd.DataFrame({"text": ["café"]})
+        frame = ar.from_pandas(df)
+        frame._attrs = {"meta": {"key": "value"}}
+        result = ar.normalize_unicode(frame)
+        result._attrs["meta"]["key"] = "mutated"
+        assert frame._attrs["meta"]["key"] == "value"
 
 
 class TestParseBoolStrings:

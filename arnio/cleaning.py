@@ -5,6 +5,7 @@ Data cleaning functions.
 
 from __future__ import annotations
 
+import copy
 import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -14,7 +15,9 @@ from ._core import (
     _clip_numeric,
     _drop_duplicates,
     _drop_nulls,
+    _DType,
     _fill_nulls,
+    _Frame,
     _normalize_case,
     _rename_columns,
     _safe_divide_columns,
@@ -658,36 +661,53 @@ def normalize_unicode(
     subset: list[str] | None = None,
     form: str = "NFC",
 ) -> ArFrame:
-    """Normalize Unicode text columns."""
+    """Normalize Unicode text columns.
 
-    from .convert import from_pandas, to_pandas
-
+    This implementation operates natively on the ArFrame's internal columnar
+    representation, avoiding a full pandas roundtrip. Only STRING columns are
+    processed; all other column types are cloned unchanged.
+    """
     valid_forms = {"NFC", "NFD", "NFKC", "NFKD"}
-
     if form not in valid_forms:
         raise ValueError(f"Unsupported Unicode normalization form: {form}")
-
     if subset is not None:
         validate_columns_exist(
             frame,
             _validate_column_sequence(subset, argument_name="subset"),
             operation="normalize_unicode",
         )
-
-    df = to_pandas(frame).copy()
-
-    columns = (
-        subset
+    cpp_frame = frame._frame
+    num_cols = cpp_frame.num_cols()
+    target_names: set[str] = (
+        set(subset)
         if subset is not None
-        else df.select_dtypes(include=["object", "string"]).columns
+        else {
+            cpp_frame.column_by_index(i).name()
+            for i in range(num_cols)
+            if cpp_frame.column_by_index(i).dtype() == _DType.STRING
+        }
     )
-
-    for col in columns:
-        df[col] = df[col].apply(
-            lambda x: unicodedata.normalize(form, x) if isinstance(x, str) else x
-        )
-
-    return from_pandas(df)
+    new_columns: dict[str, list[object]] = {}
+    dtype_hints: dict[str, _DType] = {}
+    _normalize = unicodedata.normalize
+    for i in range(num_cols):
+        col = cpp_frame.column_by_index(i)
+        name = col.name()
+        dtype = col.dtype()
+        if name in target_names and dtype == _DType.STRING:
+            values = col.to_python_list()
+            new_columns[name] = [
+                _normalize(form, v) if v is not None else None for v in values
+            ]
+            dtype_hints[name] = _DType.STRING
+        else:
+            new_columns[name] = col.to_python_list()
+            dtype_hints[name] = dtype
+    new_cpp_frame = _Frame.from_dict(new_columns, dtype_hints)
+    return ArFrame(
+        new_cpp_frame,
+        attrs=copy.deepcopy(frame._attrs) if frame._attrs is not None else None,
+    )
 
 
 def rename_columns(
