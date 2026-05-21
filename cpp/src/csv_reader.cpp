@@ -79,15 +79,17 @@ static bool getline_universal(std::istream& stream, std::string& line, std::stri
     return true;
 }
 
-bool read_record(std::istream& file, std::string& record) {
+bool read_record(std::istream& file, std::string& record, size_t& line_number) {
     record.clear();
 
     std::string line;
     std::string line_ending;
     std::string prev_line_ending;
     bool first = true;
+    size_t record_start_line = line_number + 1;
 
     while (getline_universal(file, line, line_ending)) {
+        ++line_number;
         if (!first) {
             record += prev_line_ending;  //  use PREVIOUS ending as separator
         }
@@ -101,10 +103,17 @@ bool read_record(std::istream& file, std::string& record) {
     }
 
     if (!record.empty() && !record_complete(record)) {
-        throw std::runtime_error("Unterminated quoted CSV record");
+        throw std::runtime_error("Unterminated quoted field starting at line " +
+                                 std::to_string(record_start_line));
     }
 
     return !record.empty();
+}
+
+// Overload without line tracking — used by callers that do not need location.
+bool read_record(std::istream& file, std::string& record) {
+    size_t dummy = 0;
+    return read_record(file, record, dummy);
 }
 
 void validate_header(const std::vector<std::string>& header) {
@@ -119,11 +128,14 @@ void validate_header(const std::vector<std::string>& header) {
     }
 }
 
-static bool has_valid_thousands_grouping(const std::string& value, char separator) {
+constexpr const char* INVALID_NUMERIC_TOKEN = "\x1f";
+
+static bool has_valid_thousands_grouping(const std::string& value, char separator,
+                                         char decimal_separator) {
     std::string integer_part = value;
 
     // Ignore decimal portion
-    size_t decimal_pos = value.find('.');
+    size_t decimal_pos = value.find(decimal_separator);
     if (decimal_pos != std::string::npos) {
         integer_part = value.substr(0, decimal_pos);
     }
@@ -174,14 +186,58 @@ static bool has_valid_thousands_grouping(const std::string& value, char separato
     return true;
 }
 
+static bool looks_numeric_with_chars(const std::string& value, const CsvConfig& config,
+                                     bool allow_dot) {
+    std::string check = value;
+    trim_in_place(check);
+    if (check.empty()) return false;
+    if (check[0] == '-' || check[0] == '+') check = check.substr(1);
+    if (check.empty()) return false;
+
+    bool has_digit = false;
+    for (char c : check) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            has_digit = true;
+            continue;
+        }
+        if (c == config.decimal_separator) continue;
+        if (allow_dot && c == '.') continue;
+        if (config.thousands_separator.has_value() && c == config.thousands_separator.value()) {
+            continue;
+        }
+        return false;
+    }
+    return has_digit;
+}
+
+static bool has_invalid_decimal_format(const std::string& value, const CsvConfig& config) {
+    std::string s = value;
+    trim_in_place(s);
+    if (s.empty()) return false;
+
+    if (config.decimal_separator != '.' && s.find('.') != std::string::npos &&
+        looks_numeric_with_chars(s, config, true)) {
+        return true;
+    }
+
+    return std::count(s.begin(), s.end(), config.decimal_separator) > 1 &&
+           looks_numeric_with_chars(s, config, false);
+}
+
 std::string normalize_numeric(const std::string& value, const CsvConfig& config) {
     std::string s = value;
     trim_in_place(s);
     if (config.thousands_separator.has_value()) {
         char sep = config.thousands_separator.value();
-        if (has_valid_thousands_grouping(s, sep)) {
+        if (has_valid_thousands_grouping(s, sep, config.decimal_separator)) {
             s.erase(std::remove(s.begin(), s.end(), sep), s.end());
         }
+    }
+    if (has_invalid_decimal_format(s, config)) {
+        return INVALID_NUMERIC_TOKEN;
+    }
+    if (config.decimal_separator != '.') {
+        std::replace(s.begin(), s.end(), config.decimal_separator, '.');
     }
     return s;
 }
@@ -450,16 +506,22 @@ DType CsvParser::infer_type(const std::string& value) const {
     if (config_.thousands_separator.has_value()) {
         char sep = config_.thousands_separator.value();
         if (sanitized.find(sep) != std::string::npos &&
-            !has_valid_thousands_grouping(sanitized, sep)) {
+            !has_valid_thousands_grouping(sanitized, sep, config_.decimal_separator)) {
             std::string check = sanitized;
             trim_in_place(check);
             if (!check.empty() && (check[0] == '-' || check[0] == '+')) check = check.substr(1);
+            const char decimal_sep = config_.decimal_separator;
             bool looks_numeric =
-                !check.empty() && std::all_of(check.begin(), check.end(), [sep](char c) {
-                    return std::isdigit((unsigned char)c) || c == sep || c == '.';
+                !check.empty() &&
+                std::all_of(check.begin(), check.end(), [sep, decimal_sep](char c) {
+                    return std::isdigit((unsigned char)c) || c == sep || c == decimal_sep;
                 });
             if (looks_numeric) return DType::NULL_TYPE;
         }
+    }
+
+    if (has_invalid_decimal_format(sanitized, config_)) {
+        return DType::NULL_TYPE;
     }
 
     return DType::STRING;
@@ -524,18 +586,19 @@ Frame CsvReader::read(const std::string& path) const {
     std::vector<std::vector<std::string>> raw_data;
 
     size_t record_number = 0;
+    size_t line_number = 0;
 
     if (config.skip_rows.has_value()) {
         size_t to_skip = config.skip_rows.value();
         size_t skipped = 0;
-        while (skipped < to_skip && read_record(file, line)) {
+        while (skipped < to_skip && read_record(file, line, line_number)) {
             ++record_number;
             ++skipped;
         }
     }
 
     // Read header
-    if (config.has_header && read_record(file, line)) {
+    if (config.has_header && read_record(file, line, line_number)) {
         ++record_number;
         strip_utf8_bom(line);
         header = parser_.parse_line(line);
@@ -552,7 +615,7 @@ Frame CsvReader::read(const std::string& path) const {
     size_t row_count = 0;
     std::optional<size_t> expected_cols =
         config.has_header ? std::optional<size_t>{header.size()} : std::nullopt;
-    while (read_record(file, line)) {
+    while (read_record(file, line, line_number)) {
         ++record_number;
 
         if (config.nrows.has_value() && row_count >= config.nrows.value()) {
