@@ -804,7 +804,7 @@ def parse_bool_strings(
         )
 
     if subset is not None:
-        columns = _validate_existing_column_sequence(
+        validated_columns = _validate_existing_column_sequence(
             subset,
             available_columns=df.columns,
             argument_name="subset",
@@ -814,6 +814,10 @@ def parse_bool_strings(
                 f"Columns not found in frame: {missing}"
             ),
         )
+
+        columns = [
+            col for col in validated_columns if not pd.api.types.is_bool_dtype(df[col])
+        ]
     else:
         columns = df.select_dtypes(include=["object", "string"]).columns.tolist()
 
