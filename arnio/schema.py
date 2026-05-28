@@ -1785,8 +1785,13 @@ def Email(
     Returns:
         Field: Configured email-address schema field.
     """
+
+    if not isinstance(validation, str):
+        raise TypeError("Email validation must be a string: 'light' or 'strict'")
+
     if validation not in {"light", "strict"}:
         raise ValueError("Email validation must be 'light' or 'strict'")
+
     return Field(
         dtype="string",
         nullable=nullable,
