@@ -1806,16 +1806,12 @@ def profile_chunked(
             histogram=None,
         )
 
-    # Quality score: computed from null penalty only.
-    # duplicate_penalty and type_mismatch_penalty are omitted because
-    # cross-chunk duplicates and full uniqueness data are unavailable.
-    null_ratios = [c.null_ratio for c in merged_columns.values()]
-    avg_null_ratio = sum(null_ratios) / len(null_ratios) if null_ratios else 0.0
-    null_penalty = round(min(avg_null_ratio * 100.0, 40.0), 2)
-    quality_score = round(100.0 - null_penalty, 2)
+    # quality_score is NOT computed in chunked mode.
+    # The standard score subtracts duplicate_penalty and type_mismatch_penalty
+    # in addition to null_penalty; cross-chunk duplicates and full uniqueness
+    # data are unavailable so no partial approximation is exposed here.
+    quality_score = 0.0
     score_components: dict[str, float] = {}
-    if null_penalty > 0:
-        score_components["null_penalty"] = -null_penalty
 
     interim_report = DataQualityReport(
         row_count=total_row_count,

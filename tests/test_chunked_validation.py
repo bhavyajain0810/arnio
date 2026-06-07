@@ -409,6 +409,21 @@ def test_profile_chunked_top_values_is_none():
     assert report.columns["label"].top_values is None
 
 
+def test_profile_chunked_quality_score_is_zero():
+    """quality_score is 0.0 in chunked mode.
+
+    The standard quality_score subtracts duplicate_penalty and
+    type_mismatch_penalty in addition to null_penalty.  Since cross-chunk
+    duplicates and full uniqueness data are unavailable, no partial
+    approximation is exposed.  The field is explicitly set to 0.0 per the
+    maintainer accuracy contract.
+    """
+    rows = [{"v": i} for i in range(20)]
+    report = ar.profile_chunked(_chunked_frames(rows, 5))
+    assert report.quality_score == 0.0
+    assert report.score_components == {}
+
+
 # ---------------------------------------------------------------------------
 # profile_chunked — existing profile() unchanged
 # ---------------------------------------------------------------------------
