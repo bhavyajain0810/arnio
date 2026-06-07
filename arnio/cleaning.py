@@ -2498,6 +2498,8 @@ def clean_column_names(
 def slugify_column_names(frame, on_duplicates="raise"):
     import re
 
+    import pandas as pd
+
     from .convert import from_pandas, to_pandas
     from .frame import ArFrame
 
@@ -2505,6 +2507,9 @@ def slugify_column_names(frame, on_duplicates="raise"):
         raise ValueError("on_duplicates must be 'raise'")
 
     is_arframe = isinstance(frame, ArFrame)
+    if not is_arframe and not isinstance(frame, pd.DataFrame):
+        raise TypeError("frame must be an ArFrame or pandas.DataFrame")
+
     df = to_pandas(frame) if is_arframe else frame
 
     new_cols = []

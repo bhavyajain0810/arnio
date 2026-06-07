@@ -4912,6 +4912,13 @@ class TestSlugifyColumnNames:
         with pytest.raises(ValueError):
             ar.slugify_column_names(frame, on_duplicates="ignore")
 
+    @pytest.mark.parametrize("frame", [None, [], {"a": [1]}])
+    def test_non_frame_input_raises_typeerror(self, frame):
+        with pytest.raises(
+            TypeError, match="frame must be an ArFrame or pandas.DataFrame"
+        ):
+            ar.slugify_column_names(frame)
+
 
 class TestRenameColumnsMatching:
     def test_basic_rename(self):
